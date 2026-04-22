@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log*
+
+# build outputs
+backend/dist
+backend/coverage
+frontend/.next
+frontend/out
+
+# env files
+.env
+backend/.env
+frontend/.env
+
+# misc
+.DS_Store
