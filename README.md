@@ -1,53 +1,83 @@
 # Тестовое ИИ менеджер задач
 
 ## 1. Краткое описание проекта и реализованных функций
-Проект — веб-приложение для управления задачами с AI-функциями (US-1..US-6).
+Проект: full-stack приложение управления задачами с AI-помощником.
 
-Реализовано:
-- US-1: CRUD задач (создание, просмотр, обновление, удаление).
-- US-2: фильтрация и поиск задач по статусу/приоритету/срокам/тексту.
-- US-3: AI-предложение category/tag (только suggestion + ручной apply/reject).
-- US-4: AI-декомпозиция задачи в подзадачи (редактирование перед apply).
-- US-5: AI-предложение приоритета (только suggestion + ручной apply/reject).
-- US-6: AI-сводка нагрузки по задачам.
-- AI runtime: Prompt Layer + LangGraph orchestration + JSON schema validation + error mapping.
+Функции по ТЗ:
+- US-1 CRUD:
+  - `POST /api/v1/tasks`
+  - `GET /api/v1/tasks`
+  - `GET /api/v1/tasks/:id`
+  - `PATCH /api/v1/tasks/:id`
+  - `DELETE /api/v1/tasks/:id`
+- US-2 фильтрация/поиск:
+  - query-параметры: `status`, `priority`, `q`, `dueDateFrom`, `dueDateTo`, `isOverdue`, `page`, `pageSize`, `sortBy`, `sortOrder`
+  - фильтрация выполняется на backend (Prisma/PostgreSQL), не на клиенте.
+- US-3 LLM категоризация:
+  - `POST /api/v1/tasks/:id/ai/category-suggestion` -> suggestion
+  - apply через `PATCH /api/v1/tasks/:id` (ручное подтверждение).
+- US-4 LLM декомпозиция:
+  - `POST /api/v1/tasks/:id/ai/decompose` -> suggestion
+  - apply через `POST /api/v1/tasks/:id/subtasks/bulk` (ручное подтверждение).
+- US-5 LLM приоритет:
+  - `POST /api/v1/tasks/:id/ai/priority-suggestion` -> suggestion
+  - apply через `PATCH /api/v1/tasks/:id` (ручное подтверждение).
+- US-6 LLM сводка нагрузки:
+  - `GET /api/v1/ai/workload-summary?upcomingDays=3|7|14`.
+
+AI-часть:
+- Prompt layer по сценариям US-3..US-6.
+- LangGraph runtime (`TaskAIStateGraph`) с pipeline:
+  `load_context -> build_prompt -> invoke_model -> validate_schema -> normalize_result`.
+- Safety: AJV schema validation, error mapping (`AI_INVALID_SCHEMA`, `AI_TIMEOUT`, `AI_UNAVAILABLE`).
 
 ## 2. Пошаговые инструкции настройки среды (зависимости, установка, переменные окружения)
 Требования:
 - Node.js >= 24
-- Docker (для PostgreSQL)
+- Docker + Docker Compose (для PostgreSQL)
 
 Шаги:
-1. Установить зависимости:
+1. Клонировать репозиторий и перейти в папку проекта.
+2. Установить зависимости:
 ```bash
 npm install
 ```
-2. Поднять БД:
+3. Поднять PostgreSQL:
 ```bash
 docker compose up -d
 ```
-3. Создать `.env`:
+4. Создать `.env`:
 ```bash
 cp .env.example .env
 ```
-4. Применить миграции:
+5. Применить миграции:
 ```bash
 npm run db:migrate:deploy --workspace backend
 ```
+6. (Опционально) проверить статус миграций:
+```bash
+npm run db:migrate:status --workspace backend
+```
 
 Переменные окружения:
-- `DATABASE_URL` — строка подключения к PostgreSQL.
-- `AI_PROVIDER_DEFAULT=openai|mock`.
-- `OPENAI_API_KEY` — для live OpenAI runtime (если пусто, используется mock fallback).
-- `AI_MODEL_PRIMARY` и `AI_MAX_OUTPUT_TOKENS_US*` — настройка моделей и лимитов.
+- Обязательные:
+  - `DATABASE_URL` (PostgreSQL connection string)
+  - `PORT` (по умолчанию `3001`)
+  - `NEXT_PUBLIC_API_BASE_URL` (по умолчанию `http://localhost:3001/api/v1`)
+- Для AI runtime:
+  - `AI_PROVIDER_DEFAULT=openai|mock`
+  - `OPENAI_API_KEY` (обязателен только для live `openai`; если пустой, fallback на `mock`)
+  - `AI_MODEL_PRIMARY` (по умолчанию `gpt-4`)
+  - `AI_TIMEOUT_MS`, `AI_RETRY_COUNT`
+  - `AI_MAX_OUTPUT_TOKENS_US3/US4/US5/US6`.
 
 ## 3. Инструкции запуска приложения (фронтенд и бэкенд)
-Запуск backend:
+Backend:
 ```bash
 npm run dev:backend
 ```
 
-Запуск frontend:
+Frontend:
 ```bash
 npm run dev:frontend
 ```
@@ -56,26 +86,51 @@ npm run dev:frontend
 - Backend API: `http://localhost:3001/api/v1`
 - Frontend: `http://localhost:3000`
 
+Проверка, что backend поднялся:
+```bash
+curl http://localhost:3001/api/v1/health
+```
+
+Локальные проверки качества:
+```bash
+npm run ci:local
+```
+
 ## 4. Описание принятых архитектурных решений
-- Монорепо с workspaces: `backend` (NestJS) + `frontend` (Next.js).
-- Хранение данных: PostgreSQL + Prisma ORM.
-- AI-слой отделен от task-логики:
-  - `prompts/*` для сценарных prompt-профилей,
-  - `TaskAIStateGraph` (LangGraph) для оркестрации шагов,
-  - provider adapter (`openai`/`mock`) через DI + env,
-  - AJV schema validation как safety guardrail.
-- Human-in-the-loop: US-3/US-4/US-5 не меняют данные автоматически; изменения только отдельным apply-запросом.
-- Единый формат ошибок API и idempotency для apply-операций.
+- Монорепо (npm workspaces):
+  - `backend/` — NestJS + Prisma
+  - `frontend/` — Next.js (App Router).
+- API-дизайн:
+  - версия API через префикс `/api/v1`
+  - единый формат ошибок (error envelope)
+  - idempotency для AI apply-операций (`Idempotency-Key`).
+- Данные:
+  - PostgreSQL
+  - Prisma migrations
+  - сущность `Task` с parent-child связью для подзадач.
+- Разделение ответственности:
+  - `tasks` модуль — бизнес-логика задач
+  - `ai` модуль — prompts, runtime, provider adapters, schema validation
+  - `common` — middleware/interceptors/filters.
+- AI runtime:
+  - prompt profiles в `backend/src/ai/prompts/*`
+  - orchestration в `backend/src/ai/runtime/task-ai-state.graph.ts`
+  - adapter pattern для provider (`openai`/`mock`)
+  - post-validation AI ответа через AJV.
+- HITL (human-in-the-loop):
+  - US-3/US-4/US-5 возвращают только предложения
+  - фактическая мутация данных только через отдельный apply-запрос из UI.
 
 ## 5. Известные проблемы, ограничения или компромиссы
-- Demo single-user режим, без auth/roles.
-- Idempotency-хранилище in-memory (не персистентно между рестартами backend).
-- Eval-режим детерминированный (simulation), не полноценный live benchmark.
-- Для frontend сборки используется webpack fallback (`next build --webpack`) из-за бага Turbopack на путях с unicode/спецсимволами.
+- Приложение в формате demo: single-user, без auth/roles/tenant isolation.
+- Idempotency store in-memory: после рестарта backend ключи не сохраняются.
+- Eval скрипт (`scripts/eval-placeholder.mjs`) синтетический; это не production live-eval по реальным запросам.
+- Не реализованы streaming-ответы LLM и асинхронная очередь задач.
+- Frontend build использует `next build --webpack` как обход бага Turbopack на unicode/спецсимволах в пути проекта.
 
 ## 6. Список функций, которые кандидат добавил бы при наличии дополнительного времени
-- Полноценная авторизация и multi-user изоляция данных.
-- Персистентное idempotency-хранилище (Redis/PostgreSQL).
-- Live-eval pipeline с реальными LLM-вызовами и отчетами качества/стоимости.
-- Наблюдаемость production-уровня: trace/log correlation, dashboards, алерты.
-- Расширенный UI: канбан/календарь, bulk actions, история изменений.
+- AuthN/AuthZ (JWT/OAuth2), multi-user и разграничение доступа к задачам.
+- Перенос idempotency-key storage в Redis/PostgreSQL.
+- Production live-eval + regression gates в CI/CD на реальных LLM-вызовах.
+- Расширенная observability: метрики, алерты, трассировка AI pipeline.
+- UI улучшения: канбан, календарь, пакетные операции, audit log/история изменений.
